@@ -164,10 +164,10 @@ class AuthorizationRecord(object):
         self.route53_zone_id = route53_zone_id
 
 
-def start_dns_challenge(logger, acme_client, elb_client, route53_client,
-                        elb_name, host):
+def start_dns_challenge(logger, acme_client, route53_client,
+                        name, host):
     logger.emit(
-        "updating-elb.request-acme-challenge", elb_name=elb_name, host=host
+        "updating.request-acme-challenge", name=name, host=host
     )
     authz = acme_client.request_domain_challenges(
         host, acme_client.directory.new_authz
@@ -177,7 +177,7 @@ def start_dns_challenge(logger, acme_client, elb_client, route53_client,
 
     zone_id = find_zone_id_for_domain(route53_client, host)
     logger.emit(
-        "updating-elb.create-txt-record", elb_name=elb_name, host=host
+        "updating.create-txt-record", name=name, host=host
     )
     change_id = change_txt_record(
         route53_client,
@@ -195,19 +195,19 @@ def start_dns_challenge(logger, acme_client, elb_client, route53_client,
     )
 
 
-def complete_dns_challenge(logger, acme_client, route53_client, elb_name,
+def complete_dns_challenge(logger, acme_client, route53_client, name,
                            authz_record):
     logger.emit(
-        "updating-elb.wait-for-route53",
-        elb_name=elb_name, host=authz_record.host
+        "updating.wait-for-route53",
+        name=name, host=authz_record.host
     )
     wait_for_route53_change(route53_client, authz_record.route53_change_id)
 
     response = authz_record.dns_challenge.response(acme_client.key)
 
     logger.emit(
-        "updating-elb.local-validation",
-        elb_name=elb_name, host=authz_record.host
+        "updating.local-validation",
+        name=name, host=authz_record.host
     )
     verified = response.simple_verify(
         authz_record.dns_challenge.chall,
@@ -218,14 +218,14 @@ def complete_dns_challenge(logger, acme_client, route53_client, elb_name,
         raise ValueError("Failed verification")
 
     logger.emit(
-        "updating-elb.answer-challenge",
-        elb_name=elb_name, host=authz_record.host
+        "updating.answer-challenge",
+        name=name, host=authz_record.host
     )
     acme_client.answer_challenge(authz_record.dns_challenge, response)
 
 
-def request_certificate(logger, acme_client, elb_name, authorizations, csr):
-    logger.emit("updating-elb.request-cert", elb_name=elb_name)
+def request_certificate(logger, acme_client, name, authorizations, csr):
+    logger.emit("updating.request-cert", name=name)
     cert_response, _ = acme_client.poll_and_request_issuance(
         acme.jose.util.ComparableX509(
             OpenSSL.crypto.load_certificate_request(
@@ -308,7 +308,7 @@ def update_elb(logger, acme_client, elb_client, route53_client, iam_client,
     try:
         for host in hosts:
             authz_record = start_dns_challenge(
-                logger, acme_client, elb_client, route53_client, elb_name, host
+                logger, acme_client, route53_client, elb_name, host
             )
             authorizations.append(authz_record)
 
@@ -342,10 +342,138 @@ def update_elb(logger, acme_client, elb_client, route53_client, iam_client,
                 dns_challenge.validation(acme_client.key),
             )
 
+def get_beanstalk_certificate(beanstalk_client, app_name, env_name, elb_port):
+    response = beanstalk_client.describe_configuration_settings(ApplicationName=app_name, EnvironmentName=env_name)
+    certificate_ids = [
+        option_setting["Value"]
+        for environment in response["ConfigurationSettings"]
+        for option_setting in environment["OptionSettings"]
+        if option_setting["Namespace"] == "aws:elb:listener:{}".format(elb_port)
+        if option_setting["OptionName"] == "SSLCertificateId"
+    ]
+    if certificate_ids:
+        return certificate_ids[0]
+    else:
+        return None
 
-def update_elbs(logger, acme_client, elb_client, route53_client, iam_client,
-                force_issue, domains):
-    for domain in domains:
+def add_certificate_to_beanstalk(logger, beanstalk_client, iam_client, app_name, env_name, elb_port, hosts, private_key,
+                                 pem_certificate, pem_certificate_chain):
+    logger.emit("updating-beanstalk.upload-iam-certificate", app_name=app_name, env_name=env_name)
+    response = iam_client.upload_server_certificate(
+        ServerCertificateName=generate_certificate_name(
+            hosts,
+            x509.load_pem_x509_certificate(pem_certificate, default_backend())
+        ),
+        PrivateKey=private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        ),
+        CertificateBody=pem_certificate,
+        CertificateChain=pem_certificate_chain,
+    )
+    new_cert_arn = response["ServerCertificateMetadata"]["Arn"]
+
+    # Sleep before trying to set the certificate, it appears to sometimes fail
+    # without this.
+    time.sleep(15)
+
+    namespace = "aws:elb:listener:{}".format(elb_port)
+    settings = [
+        {
+            "Namespace": namespace,
+            "OptionName": "SSLCertificateId",
+            "Value": new_cert_arn
+        },
+    ]
+    logger.emit("updating-beanstalk.set-beanstalk-certificate", app_name=app_name, env_name=env_name)
+    beanstalk_client.update_environment(
+        ApplicationName=app_name,
+        EnvironmentName=env_name,
+        OptionSettings=settings
+    )
+
+def update_beanstalk(logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
+                     force_issue, app_name, env_name, elb_port, hosts, key_type):
+    logger.emit("updating-beanstalk", app_name=app_name, env_name=env_name)
+    certificate_id = get_beanstalk_certificate(
+        beanstalk_client, app_name, env_name, elb_port
+    )
+
+    if certificate_id:
+        expiration_date = get_expiration_date_for_certificate(
+            iam_client, certificate_id
+        ).date()
+        logger.emit(
+            "updating-beanstalk.certificate-expiration",
+            app_name=app_name, env_name=env_name, expiration_date=expiration_date
+        )
+        days_until_expiration = expiration_date - datetime.date.today()
+        if (
+            days_until_expiration > CERTIFICATE_EXPIRATION_THRESHOLD and
+            not force_issue
+        ):
+            logger.emit(
+                "updating-beanstalk.skipping-recent-cert",
+                app_name=app_name, env_name=env_name
+            )
+            return
+    else:
+        logger.emit(
+            "updating-beanstalk.no-certificate",
+            app_name=app_name, env_name=env_name
+        )
+
+    if key_type == "rsa":
+        private_key = generate_rsa_private_key()
+    elif key_type == "ecdsa":
+        private_key = generate_ecdsa_private_key()
+    else:
+        raise ValueError("Invalid key_type: {!r}".format(key_type))
+    csr = generate_csr(private_key, hosts)
+
+    authorizations = []
+    try:
+        for host in hosts:
+            authz_record = start_dns_challenge(
+                logger, acme_client, route53_client, env_name, host
+            )
+            authorizations.append(authz_record)
+
+        for authz_record in authorizations:
+            complete_dns_challenge(
+                logger, acme_client, route53_client, env_name, authz_record
+            )
+
+        pem_certificate, pem_certificate_chain = request_certificate(
+            logger, acme_client, env_name, authorizations, csr
+        )
+
+        add_certificate_to_beanstalk(
+            logger,
+            beanstalk_client, iam_client,
+            app_name, env_name, elb_port, hosts,
+            private_key, pem_certificate, pem_certificate_chain
+        )
+    finally:
+        for authz_record in authorizations:
+            logger.emit(
+                "updating-beanstalk.delete-txt-record",
+                app_name=app_name, env_name=env_name, host=authz_record.host
+            )
+            dns_challenge = authz_record.dns_challenge
+            change_txt_record(
+                route53_client,
+                "DELETE",
+                authz_record.route53_zone_id,
+                dns_challenge.validation_domain_name(authz_record.host),
+                dns_challenge.validation(acme_client.key),
+            )
+
+
+def update_domain(logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
+                  force_issue, domain):
+    if "elb" in domain:
         update_elb(
             logger,
             acme_client,
@@ -358,6 +486,39 @@ def update_elbs(logger, acme_client, elb_client, route53_client, iam_client,
             domain["hosts"],
             domain.get("key_type", "rsa")
         )
+    elif "beanstalk" in domain:
+            update_beanstalk(
+                logger,
+                acme_client,
+                elb_client,
+                route53_client,
+                iam_client,
+                beanstalk_client,
+                force_issue,
+                domain["beanstalk"]["app-name"],
+                domain["beanstalk"]["env-name"],
+                domain["beanstalk"].get("port", 443),
+                domain["hosts"],
+                domain.get("key_type", "rsa")
+            )
+    else:
+        raise ValueError(
+            "Invalid configuration: each domain must contain either an ELB or Elastic Beanstalk descriptor"
+        )
+
+
+def update_domains(logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
+                   force_issue, domains):
+    for domain in domains:
+        update_domain(
+            logger,
+            acme_client,
+            elb_client,
+            route53_client,
+            iam_client,
+            beanstalk_client,
+            force_issue,
+            domain)
 
 
 def setup_acme_client(s3_client, acme_directory_url, acme_account_key):
@@ -414,6 +575,7 @@ def update_certificates(persistent=False, force_issue=False):
     elb_client = session.client("elb")
     route53_client = session.client("route53")
     iam_client = session.client("iam")
+    beanstalk_client = session.client("elasticbeanstalk")
 
     # Structure: {
     #     "domains": [
@@ -435,8 +597,8 @@ def update_certificates(persistent=False, force_issue=False):
     if persistent:
         logger.emit("running", mode="persistent")
         while True:
-            update_elbs(
-                logger, acme_client, elb_client, route53_client, iam_client,
+            update_domains(
+                logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
                 force_issue, domains
             )
             # Sleep before we check again
@@ -444,8 +606,8 @@ def update_certificates(persistent=False, force_issue=False):
             time.sleep(PERSISTENT_SLEEP_INTERVAL)
     else:
         logger.emit("running", mode="single")
-        update_elbs(
-            logger, acme_client, elb_client, route53_client, iam_client,
+        update_domains(
+            logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
             force_issue, domains
         )
 

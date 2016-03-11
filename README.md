@@ -6,15 +6,17 @@ using the AWS APIs and Let's Encrypt.
 
 ## How it works
 
-`letsencrypt-aws` takes a list of ELBs, and which hosts you want them to be
-able to serve. It runs in a loop and every day does the following:
+`letsencrypt-aws` takes a list of ELBs and/or Elastic Beanstalk environments,
+and which hosts you want them to be able to serve. It runs in a loop and every
+day does the following:
 
-It gets the certificate for that ELB. If the certificate is going to expire
-soon (in less than 45 days), it generates a new private key and CSR and sends a
-request to Let's Encrypt. It takes the DNS challenge and creates a record in
-Route53 for that challenge. This completes the Let's Encrypt challenge and we
-receive a certificate. It uploads the new certificate and private key to IAM
-and updates your ELB to use the certificate.
+It gets the certificate for that ELB/Elastic Beanstalk. If the certificate is
+going to expire soon (in less than 45 days), it generates a new private key and
+CSR and sends a request to Let's Encrypt. It takes the DNS challenge and creates
+a record in Route53 for that challenge. This completes the Let's Encrypt
+challenge and we receive a certificate. It uploads the new certificate and
+private key to IAM and updates your ELB/Elastic Beanstalk to use the
+certificate.
 
 In theory all you need to do is make sure this is running somewhere, and your
 ELBs' certificates will be kept minty fresh.
@@ -55,6 +57,15 @@ environment variable. This should be a JSON object with the following schema:
         {
             "elb": {
                 "name": "ELB name (string)",
+                "port": "optional, defaults to 443 (integer)"
+            },
+            "hosts": ["list of hosts you want on the certificate (strings)"],
+            "key_type": "rsa or ecdsa, optional, defaults to rsa (string)"
+        },
+        {
+            "beanstalk": {
+                "app-name": "Elastic Beanstalk application name (string)",
+                "env-name": "Elastic Beanstalk environment name (string)",
                 "port": "optional, defaults to 443 (integer)"
             },
             "hosts": ["list of hosts you want on the certificate (strings)"],
@@ -103,7 +114,7 @@ immediately, they are never stored on disk.
 
 ### IAM Policy
 
-The minimum set of permissions needed for `letsencrypt-aws` to work is:
+The minimum set of permissions needed for `letsencrypt-aws` to work for ELBs is:
 
 * `route53:ChangeResourceRecordSets`
 * `route53:GetChange`
@@ -112,6 +123,12 @@ The minimum set of permissions needed for `letsencrypt-aws` to work is:
 * `elasticloadbalancing:SetLoadBalancerListenerSSLCertificate`
 * `iam:ListServerCertificates`
 * `iam:UploadServerCertificate`
+
+If you wish to use it to update certificates for Elastic Beanstalk environments
+as well, you need to add:
+
+* `elasticbeanstalk:DescribeConfigurationSettings`
+* `elasticbeanstalk:UpdateEnvironment`
 
 If your `acme_account_key` is provided as an `s3://` URI you will also need:
 
@@ -156,6 +173,17 @@ An example IAM policy is:
             "Action": [
                 "iam:ListServerCertificates",
                 "iam:UploadServerCertificate"
+            ],
+            "Resource": [
+                "*"
+            ]
+        },
+        {
+            "Sid": "",
+            "Effect": "Allow",
+            "Action": [
+                "elasticbeanstalk:DescribeConfigurationSettings",
+                "elasticbeanstalk:UpdateEnvironment"
             ],
             "Resource": [
                 "*"
