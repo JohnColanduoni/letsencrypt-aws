@@ -342,13 +342,17 @@ def update_elb(logger, acme_client, elb_client, route53_client, iam_client,
                 dns_challenge.validation(acme_client.key),
             )
 
+
 def get_beanstalk_certificate(beanstalk_client, app_name, env_name, elb_port):
-    response = beanstalk_client.describe_configuration_settings(ApplicationName=app_name, EnvironmentName=env_name)
+    response = beanstalk_client.describe_configuration_settings(
+        ApplicationName=app_name, EnvironmentName=env_name
+    )
     certificate_ids = [
         option_setting["Value"]
         for environment in response["ConfigurationSettings"]
         for option_setting in environment["OptionSettings"]
-        if option_setting["Namespace"] == "aws:elb:listener:{}".format(elb_port)
+        if option_setting["Namespace"] ==
+        "aws:elb:listener:{}".format(elb_port)
         if option_setting["OptionName"] == "SSLCertificateId"
     ]
     if certificate_ids:
@@ -356,9 +360,15 @@ def get_beanstalk_certificate(beanstalk_client, app_name, env_name, elb_port):
     else:
         return None
 
-def add_certificate_to_beanstalk(logger, beanstalk_client, iam_client, app_name, env_name, elb_port, hosts, private_key,
-                                 pem_certificate, pem_certificate_chain):
-    logger.emit("updating-beanstalk.upload-iam-certificate", app_name=app_name, env_name=env_name)
+
+def add_certificate_to_beanstalk(logger, beanstalk_client, iam_client,
+                                 app_name, env_name, elb_port, hosts,
+                                 private_key, pem_certificate,
+                                 pem_certificate_chain):
+    logger.emit(
+        "updating-beanstalk.upload-iam-certificate",
+        app_name=app_name, env_name=env_name
+    )
     response = iam_client.upload_server_certificate(
         ServerCertificateName=generate_certificate_name(
             hosts,
@@ -386,15 +396,20 @@ def add_certificate_to_beanstalk(logger, beanstalk_client, iam_client, app_name,
             "Value": new_cert_arn
         },
     ]
-    logger.emit("updating-beanstalk.set-beanstalk-certificate", app_name=app_name, env_name=env_name)
+    logger.emit(
+        "updating-beanstalk.set-beanstalk-certificate",
+        app_name=app_name, env_name=env_name
+    )
     beanstalk_client.update_environment(
         ApplicationName=app_name,
         EnvironmentName=env_name,
         OptionSettings=settings
     )
 
-def update_beanstalk(logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
-                     force_issue, app_name, env_name, elb_port, hosts, key_type):
+
+def update_beanstalk(logger, acme_client, elb_client, route53_client,
+                     iam_client, beanstalk_client, force_issue, app_name,
+                     env_name, elb_port, hosts, key_type):
     logger.emit("updating-beanstalk", app_name=app_name, env_name=env_name)
     certificate_id = get_beanstalk_certificate(
         beanstalk_client, app_name, env_name, elb_port
@@ -406,7 +421,8 @@ def update_beanstalk(logger, acme_client, elb_client, route53_client, iam_client
         ).date()
         logger.emit(
             "updating-beanstalk.certificate-expiration",
-            app_name=app_name, env_name=env_name, expiration_date=expiration_date
+            app_name=app_name, env_name=env_name,
+            expiration_date=expiration_date
         )
         days_until_expiration = expiration_date - datetime.date.today()
         if (
@@ -471,8 +487,8 @@ def update_beanstalk(logger, acme_client, elb_client, route53_client, iam_client
             )
 
 
-def update_domain(logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
-                  force_issue, domain):
+def update_domain(logger, acme_client, elb_client, route53_client, iam_client,
+                  beanstalk_client, force_issue, domain):
     if "elb" in domain:
         update_elb(
             logger,
@@ -503,12 +519,13 @@ def update_domain(logger, acme_client, elb_client, route53_client, iam_client, b
             )
     else:
         raise ValueError(
-            "Invalid configuration: each domain must contain either an ELB or Elastic Beanstalk descriptor"
+            "Invalid configuration: each domain must contain either an \
+            ELB or Elastic Beanstalk descriptor"
         )
 
 
-def update_domains(logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
-                   force_issue, domains):
+def update_domains(logger, acme_client, elb_client, route53_client, iam_client,
+                   beanstalk_client, force_issue, domains):
     for domain in domains:
         update_domain(
             logger,
@@ -598,8 +615,8 @@ def update_certificates(persistent=False, force_issue=False):
         logger.emit("running", mode="persistent")
         while True:
             update_domains(
-                logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
-                force_issue, domains
+                logger, acme_client, elb_client, route53_client, iam_client,
+                beanstalk_client, force_issue, domains
             )
             # Sleep before we check again
             logger.emit("sleeping", duration=PERSISTENT_SLEEP_INTERVAL)
@@ -607,8 +624,8 @@ def update_certificates(persistent=False, force_issue=False):
     else:
         logger.emit("running", mode="single")
         update_domains(
-            logger, acme_client, elb_client, route53_client, iam_client, beanstalk_client,
-            force_issue, domains
+            logger, acme_client, elb_client, route53_client, iam_client,
+            beanstalk_client, force_issue, domains
         )
 
 
