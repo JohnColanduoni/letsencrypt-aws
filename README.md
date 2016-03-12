@@ -125,10 +125,7 @@ The minimum set of permissions needed for `letsencrypt-aws` to work for ELBs is:
 * `iam:UploadServerCertificate`
 
 If you wish to use it to update certificates for Elastic Beanstalk environments
-as well, you need to add:
-
-* `elasticbeanstalk:DescribeConfigurationSettings`
-* `elasticbeanstalk:UpdateEnvironment`
+as well, you need to add the `AWSElasticBeanstalkFullAccess` managed policy.
 
 If your `acme_account_key` is provided as an `s3://` URI you will also need:
 

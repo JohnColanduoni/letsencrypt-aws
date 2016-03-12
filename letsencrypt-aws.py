@@ -660,6 +660,11 @@ def register(email, out):
         encryption_algorithm=serialization.NoEncryption(),
     ))
 
+def lambda_update_certificates(event, context):
+    os.environ["LETSENCRYPT_AWS_CONFIG"] = json.dumps(event)
+    update_certificates()
+    context.done()
+    return { 'message': 'Success!' }
 
 if __name__ == "__main__":
     cli()
